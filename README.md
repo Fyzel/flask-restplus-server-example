@@ -11,6 +11,18 @@ RESTful API Server Example
 This project showcases my vision on how the RESTful API server should be
 implemented.
 
+> **Author's vision update!**
+>
+> I used to use RESTful style APIs for quite a number of projects and this
+> example was the finest foundation I ended up with, but I always felt
+> limited by HTTP request-response nature and RESTful resources. Thus, I was
+> looking for a new solution to the API problem space. I am currently happy
+> with [WAMP-proto](https://wamp-proto.org/) specification
+> ([here is my barebones demo](https://github.com/frol/wamp-demo)), so I can
+> recommend it. I have also switched to Rust programming language. I am
+> currently working on async/await-powered implementation of WAMP-proto in
+> Rust. Stay tuned!
+
 The goals that were achived in this example:
 
 * RESTful API server should be self-documented using OpenAPI (fka Swagger)
@@ -260,7 +272,7 @@ Dependencies
 
 ### Project Dependencies
 
-* [**Python**](https://www.python.org/) 2.7, 3.3+ / pypy2 (2.5.0)
+* [**Python**](https://www.python.org/) 2.7, 3.5+ / pypy2 (2.5.0)
 * [**flask-restplus**](https://github.com/noirbizarre/flask-restplus) (+
   [*flask*](http://flask.pocoo.org/))
 * [**sqlalchemy**](http://www.sqlalchemy.org/) (+
@@ -346,6 +358,12 @@ so go ahead and turn the server ON! (Read more details on this in Tips section)
 ```bash
 $ invoke app.run
 ```
+
+#### Deploy Server
+
+In general, you deploy this app as any other Flask/WSGI application. There are
+a few basic deployment strategies documented in the [`./deploy/`](./deploy/)
+folder.
 
 
 Quickstart
@@ -504,6 +522,70 @@ NOTE: As mentioned above, a slightly modified Swagger Codegen version is used
 to enable OAuth2 support in Python client.
 
 
+Integrations with Flask-* Projects
+----------------------------------
+
+Since this project is only an extension to Flask, most (if not all) Flask
+plugins should work.
+
+Verified compatible projects:
+* flask-sqlalchemy
+* flask-login
+* flask-marshmallow
+* flask-oauthlib
+* flask-cors
+* flask-limiter
+
+### Example integration steps
+  
+#### flask-limiter
+
+1. Add `flask-limiter` to end of the `app/requirements.txt` file, so it gets
+installed when the application is deployed.
+2. Apply the relevant changes to `app/extensions/__init__.py`:
+
+    ```python
+    # ... other imports.
+
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+
+    # change limiter configs per your project needs.
+    limiter = Limiter(key_func=get_remote_address, default_limits=["1 per minute"])
+
+    from . import api
+
+    def init_app(app):
+        """
+        Application extensions initialization.
+        """
+        for extension in (
+                # ... other extensions.
+                limiter,  # Add this
+            ):
+            extension.init_app(app)
+    ```
+3. (Optional) Set endpoint-specific limits:
+
+    ```python
+    from app.extensions import limiter
+
+    @api.route('/account/verify')
+    class IdentityVerify(Resource):
+        """
+        Handle identity verification.
+        """
+        # Notice this is different from the simple example at the top of flask-limiter doc page.
+        # The reason is explained here: https://flask-limiter.readthedocs.io/en/stable/#using-flask-pluggable-views
+        decorators = [limiter.limit("10/second")] # config as you need. 
+
+        @api.parameters(parameters.SomeParameters())
+        @api.response(schemas.SomeSchema())
+        def post(self, args):
+            return {"verified": True}
+    ```
+
+
 Tips
 ----
 
@@ -554,9 +636,77 @@ You can use [`better_exceptions`](https://github.com/Qix-/better-exceptions)
 package to enable detailed tracebacks. Just add `better_exceptions` to the
 `app/requirements.txt` and `import better_exceptions` in the `app/__init__.py`.
 
+
+Marshmallow Tricks
+------------------
+
+There are a few helpers already available in the `flask_restplus_patched`:
+
+* `flask_restplus_patched.parameters.Parameters` - base class, which is a thin
+  wrapper on top of Marshmallow Schema.
+* `flask_restplus_patched.parameters.PostFormParameters` - a helper class,
+  which automatically mark all the fields that has no explicitly defined
+  location to be form data parameters.
+* `flask_restplus_patched.parameters.PatchJSONParameters` - a helper class for
+  the common use-case of [RFC 6902](http://tools.ietf.org/html/rfc6902)
+  describing JSON PATCH.
+* `flask_restplus_patched.namespace.Namespace.parameters` - a helper decorator,
+  which automatically handles and documents the passed `Parameters`.
+
+You can find the examples of the usage throughout the code base (in
+`/app/modules/*`).
+
+
+### JSON Parameters
+
+While there is an implementation for JSON PATCH Parameters, there are other
+use-cases, where you may need to handle JSON as input parameters. Naturally,
+JSON input is just a form data body text which is treated as JSON on a server
+side, so you only need define a single variable called `body` with
+`location='json'`:
+
+```python
+class UserSchema(Schema):
+    id = base_fields.Integer(required=False)
+    username = base_fields.String(required=True)
+
+
+class MyObjectSchema(Schema):
+    id = base_fields.Integer(required=True)
+    priority = base_fields.String(required=True)
+    owner = base_fields.Nested(UserSchema, required=False)
+
+
+class CreateMyObjectParameters(Parameters):
+    body = base_fields.Nested(MyObjectSchema, location='json', required=True)
+
+
+api = Namespace('my-objects-controller', description="My Objects Controller", path='/my-objects')
+
+
+@api.route('/')
+class MyObjects(Resource):
+    """
+    Manipulations with My Objects.
+    """
+
+    @api.parameters(CreateMyObjectParameters())
+    @api.response(MyObjectSchema())
+    @api.response(code=HTTPStatus.CONFLICT)
+    @api.doc(id='create_my_object')
+    def post(self, args):
+        """
+        Create a new My Object.
+        """
+        return create_my_object(args)
+```
+
+
 Useful Links
 ============
 
+* [Q&A about this project](https://github.com/frol/flask-restplus-server-example/issues?utf8=%E2%9C%93&q=is%3Aissue+label%3Aquestion)
+* [Valuable extensions that didn't make into the upstream](https://github.com/frol/flask-restplus-server-example/issues?utf8=%E2%9C%93&q=label%3Aextension)
 * "[The big Picture](https://identityserver.github.io/Documentation/docsv2/overview/bigPicture.html)" -
   short yet complete idea about how the modern apps should talk.
 * "[Please. Don't PATCH Like An Idiot.](http://williamdurand.fr/2014/02/14/please-do-not-patch-like-an-idiot/)"
